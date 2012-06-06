@@ -1,9 +1,9 @@
 ;;; psgml-superedit --- additional editing functions for PSGML
 
-;; Copyright (C) 2011 Andreas Nolda
+;; Copyright (C) 2012 Andreas Nolda
 
 ;; Author: Andreas Nolda <nolda.andreas@googlemail.com>
-;; Version: 1.2
+;; Version: 1.4
 
 ;; This program is free software; you can redistribute it and/or modify it under
 ;; the terms of the GNU General Public License as published by the Free Software
@@ -32,6 +32,7 @@
 ;;           (lambda ()
 ;;             (require 'psgml-superedit)
 ;;             (define-key sgml-mode-map (kbd "C-c C-e") 'sgml-insert-element-dwim)
+;;             (define-key sgml-mode-map (kbd "C-c RET") 'sgml-split-element-dwim)
 ;;             (define-key sgml-mode-map (kbd "C-c DEL") 'sgml-untag-element) ; freeing C-c -
 ;;             (define-key sgml-mode-map (kbd "C-c -") 'sgml-delete-attribute)
 ;;             (define-key sgml-mode-map (kbd "C-c ?") 'sgml-insert-pi)
@@ -61,9 +62,9 @@
 (require 'psgml-edit)
 
 
-;; Generalised element insertion:
+;; Generalised element insertion and splitting:
 
-(defun sgml-insert-element-dwim (el)
+(defun sgml-insert-element-or-tag-region (el)
   "Insert element, tagging region if appropriate."
   (interactive (list (save-excursion
                        (sgml-read-element-name "Element: "))))
@@ -72,6 +73,51 @@
              (deactivate-mark)
              (sgml-down-element))
     (sgml-insert-element el)))
+
+(defun sgml-insert-empty-element (el)
+  "Insert an empty element, even if it is not defined as such."
+  (interactive (list (sgml-read-element-name "Element: ")))
+  (let (element)
+    (when (and el (not (equal el "")))
+      (sgml-insert-tag (sgml-start-tag-of el) 'silent)
+      (if (sgml-check-empty el)
+	  (forward-char -2)
+	(forward-char -1))
+      (setq element (sgml-find-element-of (point)))
+      (sgml-insert-attributes (funcall sgml-new-attribute-list-function
+				       element)
+			      (sgml-element-attlist element))
+      (if (sgml-check-empty el)
+	  (forward-char 2)
+        (insert "/")
+	(forward-char 1)))))
+
+(defun sgml-insert-element-dwim (el &optional empty)
+  "Insert element, tagging region if appropriate. With non-nil prefix argument,
+insert an empty element, even if it is not defined as such."
+  (interactive (list (save-excursion
+                       (sgml-read-element-name "Element: "))
+                     current-prefix-arg))
+  (if empty
+      (sgml-insert-empty-element el)
+    (sgml-insert-element-or-tag-region el)))
+
+(defun sgml-split-element-dwim (&optional no-att)
+  "Split the current element at point. With non-nil prefix argument, don't copy
+attributes."
+  (interactive "*P")
+  (let ((el (sgml-last-element)))
+    (when (or (and (> (point) (sgml-element-start el))
+                   (< (point) (sgml-element-stag-end el)))
+              (> (point) (sgml-element-etag-start el)))
+      (error "Point is inside markup"))
+    (sgml-insert-end-tag)
+    (sgml-insert-tag (sgml-start-tag-of el) 'silent)
+    (unless no-att
+        (skip-chars-backward ">")
+        (sgml-insert-attributes (sgml-element-attribute-specification-list el)
+                                (sgml-element-attlist el))
+        (skip-chars-forward ">"))))
 
 
 ;; Attribute deletion:
@@ -286,7 +332,7 @@
 (defun sgml-mark-current-element-content ()
   "Mark content of current element."
   (interactive)
-  (let ((el (sgml-find-element-of (point))))
+  (let ((el (sgml-last-element)))
     (goto-char (sgml-element-stag-end el))
     (push-mark (sgml-element-etag-start el) nil t)))
 
@@ -306,9 +352,10 @@
   (push-mark (save-excursion
                (sgml-forward-comment)) nil t))
 
-(defun sgml-mark-dwim ()
-  "Mark markup or content."
-  (interactive)
+(defun sgml-mark-dwim (&optional content)
+  "Mark markup or content. With non-nil prefix argument, mark content
+unconditionally."
+  (interactive "P")
   (sgml-parse-to-here)
   (if sgml-markup-type
       (sgml-with-syntax-table (mark-sexp))
@@ -318,7 +365,9 @@
              (skip-chars-forward "<")
              (sgml-parse-to-here)
              sgml-markup-type)))
-      (cond ((eq next-type 'start-tag)
+      (cond (content
+             (sgml-mark-current-element-content))
+            ((eq next-type 'start-tag)
              (sgml-mark-element))
             ((eq next-type 'pi)
              (sgml-mark-pi))
